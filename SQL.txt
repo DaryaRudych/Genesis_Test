@@ -1,0 +1,71 @@
+-- Количество регистраций новых пользователей по дням по группам стран --
+SELECT date_reg, group, count(u.id)
+from users u 
+join countries c
+on u.id_country = c.id
+group by date_reg, cgroup;
+
+with total_sent as (
+	select date_sent, id_type, count(id) as emails
+	from emails_sent
+	group by id_type, date_sent), 
+total_clicks as (select id_type, count(ec.id) as clicks
+				 from emails_clicks ec
+				 join emails_sent es
+				 on ec.id_email = es.id
+				 group by id_type)
+select date_sent, total_clicks.id_type, (total_clicks.clicks/coalesce(total_sent.emails, 0)) as CTR
+from total_sent 
+join total_clicks 
+on total_sent.id_type = total_clicks.id_type
+group by total_clicks.id_type, date_sent, total_clicks.clicks, total_sent.emails;
+
+-- CTR разных типов писем по дням --
+WITH emails_clicked AS (
+	select es.id_type, count(es.id) as clicked
+	from emails_sent es
+	join emails_clicks ec
+	on es.id = ec.id_email
+	where date_trunc('day', ec.date_click) between date_trunc('minute', es.date_sent) and date_trunc('minute', es.date_sent + cast('10 minutes' as interval))
+	and date_trunc('day', date_sent) between date_trunc('day', now()) and date_trunc('day', now() - cast('6 days' as interval))
+	group by es.id_type)
+select es.id_type, (clicked/count(es.id)*100, 'FM990.00" %"') as perc
+from emails_clicked emc
+join emails_sent es
+on emc.id_type = es.id_type
+group by es.id_type, clicked;
+
+--% писем, кликнутых в течение 10 минут после отправки, по типам писем суммарно за последние 7 суток--
+with sent as (
+	select id_type, count(id) as id_sent
+	from emails_sent2
+	where date_trunc('day', date_sent) <= date_trunc('day', current_date) and date_trunc('day', date_sent) > date_trunc('day', current_date - 6)
+	group by id_type),
+clicked as (
+	select id_type, count(id_email) as id_clicked
+	from emails_sent2 es 
+	inner join emails_clicks2 emc
+	on es.id = emc.id_email
+	where date_trunc('minute', date_click) <= date_trunc('minute', date_sent + cast('10 minutes' as interval))
+	group by id_type)
+select s.id_type, to_char(round(cast(c.id_clicked as numeric)/cast(s.id_sent as numeric),2), 'FM990.00" %"') as Percentage
+from sent s
+join clicked c
+on s.id_type = c.id_type
+group by s.id_type, c.id_clicked, s.id_sent;
+
+-- Медианное время до клика в секундах по типам писем за последний месяц -- 
+with last_month as (
+	select id_type, id as id_sent
+	from emails_sent2
+	where date_trunc('month', date_sent) <= date_trunc('month', current_date) and date_trunc('day', date_sent) > date_trunc('month', current_date - 1)),
+diff_sec as (
+	select es.id_type, id_email, 
+	(DATE_PART('minute', date_click) - DATE_PART('minute', date_sent))*60 as Diff_Sec
+	from emails_sent2 es
+	join emails_clicks2 ec
+	on es.id = ec.id_email)
+select ds.id_type, percentile_cont(0.5) within group (order by ds.diff_sec)
+from diff_sec ds, last_month lm
+where ds.id_email in(lm.id_sent)
+group by ds.id_type;
